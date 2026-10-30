@@ -1,9 +1,25 @@
 import {
   initializeTracing,
+  isGcpProjectIdUnavailableError,
   isSafeToLogOpenTelemetryMessage,
 } from './tracing';
 
 describe('tracing', () => {
+  describe('isGcpProjectIdUnavailableError', () => {
+    it('matches google-auth missing project id errors', () => {
+      expect(
+        isGcpProjectIdUnavailableError(
+          new Error(
+            'Unable to detect a Project Id in the current environment.',
+          ),
+        ),
+      ).toBe(true);
+      expect(isGcpProjectIdUnavailableError(new Error('network failure'))).toBe(
+        false,
+      );
+    });
+  });
+
   describe('isSafeToLogOpenTelemetryMessage', () => {
     it('refuses messages that contain Bearer or ya29.', () => {
       expect(isSafeToLogOpenTelemetryMessage('export failed')).toBe(true);

@@ -1,6 +1,8 @@
+import type { GoogleAuth } from 'google-auth-library';
 import type { NodeSDK } from '@opentelemetry/sdk-node';
 
 let activeSdk: NodeSDK | undefined;
+let cachedGoogleAuth: GoogleAuth | undefined;
 let cachedAuthHeaders: (() => Promise<Record<string, string>>) | undefined;
 
 const GCP_CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
@@ -10,6 +12,28 @@ const METRIC_EXPORT_INTERVAL_MS = 30_000;
 
 export function isSafeToLogOpenTelemetryMessage(message: string): boolean {
   return !message.includes('Bearer') && !message.includes('ya29.');
+}
+
+const GCP_PROJECT_ID_UNAVAILABLE_MARKER = 'Unable to detect a Project Id';
+
+export function isGcpProjectIdUnavailableError(error: unknown): boolean {
+  const message =
+    error instanceof Error ? error.message : error ? String(error) : '';
+  return message.includes(GCP_PROJECT_ID_UNAVAILABLE_MARKER);
+}
+
+async function resolveGcpProjectId(
+  auth: GoogleAuth,
+): Promise<string | undefined> {
+  try {
+    const projectId = await auth.getProjectId();
+    return projectId || undefined;
+  } catch (error) {
+    if (isGcpProjectIdUnavailableError(error)) {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 function warn(message: string, error?: unknown): void {
@@ -22,10 +46,19 @@ function warn(message: string, error?: unknown): void {
   console.warn(message);
 }
 
+async function getGoogleAuth(): Promise<GoogleAuth> {
+  if (!cachedGoogleAuth) {
+    const { GoogleAuth: GoogleAuthCtor } = await import('google-auth-library');
+    cachedGoogleAuth = new GoogleAuthCtor({
+      scopes: [GCP_CLOUD_PLATFORM_SCOPE],
+    });
+  }
+  return cachedGoogleAuth;
+}
+
 async function buildAuthHeaders(): Promise<Record<string, string>> {
   if (!cachedAuthHeaders) {
-    const { GoogleAuth } = await import('google-auth-library');
-    const auth = new GoogleAuth({ scopes: [GCP_CLOUD_PLATFORM_SCOPE] });
+    const auth = await getGoogleAuth();
     const client = await auth.getClient();
     cachedAuthHeaders = async () => {
       const accessToken = await client.getAccessToken();
@@ -53,6 +86,7 @@ export async function initializeTracing(enabled: boolean): Promise<void> {
       { OTLPTraceExporter },
       { OTLPMetricExporter },
       { PeriodicExportingMetricReader },
+      { resourceFromAttributes },
       { diag, DiagLogLevel },
     ] = await Promise.all([
       import('@opentelemetry/sdk-node'),
@@ -61,8 +95,16 @@ export async function initializeTracing(enabled: boolean): Promise<void> {
       import('@opentelemetry/exporter-trace-otlp-http'),
       import('@opentelemetry/exporter-metrics-otlp-http'),
       import('@opentelemetry/sdk-metrics'),
+      import('@opentelemetry/resources'),
       import('@opentelemetry/api'),
     ]);
+
+    const auth = await getGoogleAuth();
+    const projectId = await resolveGcpProjectId(auth);
+    if (!projectId) {
+      console.warn('OpenTelemetry: GCP project id unavailable');
+      return;
+    }
 
     diag.setLogger(
       {
@@ -103,6 +145,10 @@ export async function initializeTracing(enabled: boolean): Promise<void> {
 
     const sdk = new NodeSDK({
       serviceName,
+      resource: resourceFromAttributes({
+        'service.name': serviceName,
+        'gcp.project_id': projectId,
+      }),
       traceExporter,
       metricReaders: [metricReader],
       instrumentations: [new HttpInstrumentation(), new PgInstrumentation()],
