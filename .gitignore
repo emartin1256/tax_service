@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build
+dist/
+tsconfig.tsbuildinfo
+tsconfig.build.tsbuildinfo
+
+# Tests
+coverage/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local scaffold temp
+tmp/

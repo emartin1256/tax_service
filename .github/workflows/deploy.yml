@@ -1,0 +1,101 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-disabled-notice:
+    if: github.event_name == 'push' && vars.DEPLOY_ENABLED != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy skipped
+        run: |
+          echo "Deploy was not run: push to main only deploys when the repository variable DEPLOY_ENABLED is set to 'true'."
+          echo "Current DEPLOY_ENABLED=${{ vars.DEPLOY_ENABLED }}"
+          echo "Use workflow_dispatch to deploy manually, or set DEPLOY_ENABLED=true after infrastructure and secrets are ready."
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+
+    env:
+      GCP_PROJECT_ID: tax-service-513123
+      GCP_REGION: us-central1
+      IMAGE: us-central1-docker.pkg.dev/tax-service-513123/tax-service/tax-service:${{ github.sha }}
+      CLOUD_RUN_SERVICE: tax-service
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push container image
+        run: |
+          docker build -t "${IMAGE}" .
+          docker push "${IMAGE}"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run database migrations
+        env:
+          DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
+        run: npx prisma migrate deploy
+
+      - name: Update Cloud Run service
+        run: |
+          gcloud run services update "${CLOUD_RUN_SERVICE}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --image="${IMAGE}" \
+            --max-instances=2
+
+      - name: Verify readiness
+        env:
+          GCP_PROJECT_ID: tax-service-513123
+          GCP_REGION: us-central1
+        run: |
+          set -euo pipefail
+          SERVICE_URL="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --format='value(status.url)')"
+          echo "Service URL: ${SERVICE_URL}"
+          for attempt in $(seq 1 12); do
+            if curl -fsS "${SERVICE_URL}/health/ready"; then
+              echo "Readiness check passed on attempt ${attempt}"
+              exit 0
+            fi
+            echo "Readiness attempt ${attempt} failed; retrying in 10s..."
+            sleep 10
+          done
+          echo "Readiness check failed after retries. Recent Cloud Run logs:"
+          gcloud logging read \
+            "resource.type=cloud_run_revision AND resource.labels.service_name=${CLOUD_RUN_SERVICE}" \
+            --project="${GCP_PROJECT_ID}" \
+            --limit=50 \
+            --format='value(textPayload)' || true
+          exit 1

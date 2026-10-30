@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tax
+          POSTGRES_PASSWORD: tax
+          POSTGRES_DB: tax_service
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tax -d tax_service"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://tax:tax@localhost:5432/tax_service?schema=public
+      DIRECT_DATABASE_URL: postgresql://tax:tax@localhost:5432/tax_service?schema=public
+      NODE_ENV: test
+      LOG_LEVEL: silent
+      OTEL_ENABLED: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+
+      - name: Apply database migrations
+        run: npx prisma migrate deploy
+
+      - run: npm test
+      - run: npm run test:integration
+
+      - run: npx prisma validate
+
+      - run: npm run build
+
+      - name: Build Docker image
+        run: docker build -t tax-service:ci .

@@ -1,0 +1,124 @@
+Tech Task
+Engineer Position
+Your task is to implement a tax service for Novabook in Typescript. The service will be used to
+ingest transaction events and allow users to query their tax position for any given date.
+Transaction event ingestion and querying the tax position will be done via HTTP endpoints
+detailed below.
+Ingest all the sales events and tax payment events via the ingest endpoint and allow users to
+query their tax position for any given point in time using the query tax position endpoint.
+The tax on an item is calculated by multiplying the cost by the tax rate.
+The tax position is the total tax from sales minus tax payments made.
+The date in event payloads must be respected - past or future dates are possible!
+Users should also be able to amend items within invoices processed in sales events via the
+amend sale endpoint. It is possible to amend a sales event that has not been received. It is
+possible to amend sales events at multiple points in time.
+Observability of this service is important so ensure the appropriate level of observability is
+implemented. Please provide a README with clear instructions for starting the service and any
+other tasks you implement.
+If you encounter ambiguity use your best judgment to navigate the issue and document details
+within the README.md
+Assumptions:
+● There are no financial years - the tax position should accumulate indefinitely
+● This is a single-user service - no need to implement users or tenants
+● No authentication is required
+
+Endpoint Specs
+Ingest Endpoint
+Allows a user to send sales and tax payment events to our service
+Method: POST
+
+Request path: /transactions
+Request JSON Body: One of the following
+Sale Event
+{
+“eventType”: “SALES”,
+“date”: string - Date and time ISO 8601
+“invoiceId”: string,
+“items”: [{
+“itemId”: string,
+“cost”: number - amount in pennies,
+“taxRate”: number
+}]
+}
+Sale Event Example
+{
+“eventType”: “SALES”,
+“date”: “2024-02-22T17:29:39Z”,
+“invoiceId”: “3419027d-960f-4e8f-b8b7-f7b2b4791824”,
+“items”: [{
+
+“itemId”: “02db47b6-fe68-4005-a827-24c6e962f3df”,
+“cost”: 1099, // This is £10.99
+“taxRate”: 0.2
+}]
+}
+Tax Payment Event
+{
+“eventType”: “TAX_PAYMENT”,
+“date”: string - Date and time ISO 8601,
+“amount”: number - amount in pennies
+}
+
+Tax Payment Event Example
+{
+“eventType”: “TAX_PAYMENT”,
+“date”: “2024-02-22T17:29:39Z”,
+“amount”: 74901 // £749.01
+}
+Successful response
+Status code: 202
+
+No body
+
+Query Tax Position Endpoint
+Allows a user to query their tax position at any given point in time. This should calculate the tax
+position from ingested events and any further user interaction
+Method: GET
+Request path: /tax-position
+Request query parameters:
+● date: Date and time ISO 8601
+○ Mandatory
+○ Example: 2024-02-22T17:29:39Z
+
+No Request body
+
+Successful response
+Status code: 200
+Response JSON body:
+{
+“date”: Date and time ISO 8601
+“taxPosition”: number
+}
+Example body:
+{
+“date”: “2024-02-22T17:29:39Z”,
+“taxPosition”: 49 // £0.49
+}
+
+Amend Sale Endpoint
+Allows a user to modify an item within a sale at a specific point in time. The service must accept
+all amendments even if the sale or item does not yet exist. The sales event can be received by
+the service after the amendment.
+Method: PATCH
+Request path: /sale
+Request JSON Body
+{
+“date”: Date and time ISO 8601,
+“invoiceId”: string,
+
+“itemId”: string,
+“cost”: number - amount in pennies,
+“taxRate”: number
+}
+Request JSON Example
+{
+“date”: “2024-02-22T17:29:39Z”,
+“invoiceId”: “3419027d-960f-4e8f-b8b7-f7b2b4791824”,
+“itemId”: “02db47b6-fe68-4005-a827-24c6e962f3df”,
+“cost”: 798 // £7.98,
+“taxRate”: 0.15
+}
+
+Successful response
+Status code: 202
+No body
