@@ -6,7 +6,8 @@ let activeSdk: NodeSDK | undefined;
 let cachedGoogleAuth: GoogleAuth | undefined;
 let cachedAuthHeaders: (() => Promise<Record<string, string>>) | undefined;
 
-const GCP_CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+const GCP_CLOUD_PLATFORM_SCOPE =
+  'https://www.googleapis.com/auth/cloud-platform';
 const GCE_METADATA_REGION_URL =
   'http://metadata.google.internal/computeMetadata/v1/instance/region';
 const METADATA_FETCH_TIMEOUT_MS = 1_000;

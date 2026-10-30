@@ -11,9 +11,9 @@ describe('tracing', () => {
       expect(
         parseGceMetadataRegionBody('projects/123/regions/us-central1'),
       ).toBe('us-central1');
-      expect(parseGceMetadataRegionBody('projects/123/zones/us-central1-a')).toBe(
-        undefined,
-      );
+      expect(
+        parseGceMetadataRegionBody('projects/123/zones/us-central1-a'),
+      ).toBe(undefined);
       expect(parseGceMetadataRegionBody('')).toBe(undefined);
     });
   });
