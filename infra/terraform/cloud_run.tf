@@ -65,10 +65,11 @@ resource "google_cloud_run_v2_service" "tax_service" {
         tcp_socket {
           port = 8080
         }
+        # Nest and a waking Neon database can take longer than the first few seconds.
         initial_delay_seconds = 0
-        timeout_seconds       = 1
-        period_seconds        = 3
-        failure_threshold     = 3
+        timeout_seconds       = 5
+        period_seconds        = 10
+        failure_threshold     = 18
       }
     }
   }
