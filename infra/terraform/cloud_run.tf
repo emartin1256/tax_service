@@ -52,11 +52,6 @@ resource "google_cloud_run_v2_service" "tax_service" {
       }
 
       env {
-        name  = "PORT"
-        value = "8080"
-      }
-
-      env {
         name = "DATABASE_URL"
         value_source {
           secret_key_ref {
