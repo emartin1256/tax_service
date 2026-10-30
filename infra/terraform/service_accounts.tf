@@ -31,3 +31,15 @@ resource "google_service_account_iam_member" "deployer_act_as_runtime" {
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.deployer.email}"
 }
+
+resource "google_project_iam_member" "runtime_telemetry_traces_writer" {
+  project = var.project_id
+  role    = "roles/telemetry.tracesWriter"
+  member  = "serviceAccount:${google_service_account.runtime.email}"
+}
+
+resource "google_project_iam_member" "runtime_telemetry_metrics_writer" {
+  project = var.project_id
+  role    = "roles/telemetry.metricsWriter"
+  member  = "serviceAccount:${google_service_account.runtime.email}"
+}

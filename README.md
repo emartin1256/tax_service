@@ -25,7 +25,7 @@ Copy `.env.example` to `.env` for local development. Placeholder values point at
 | `DATABASE_URL` | Pooled Postgres URL for the app |
 | `DIRECT_DATABASE_URL` | Direct Postgres URL (migrations; defaults to `DATABASE_URL` if omitted) |
 | `LOG_LEVEL` | Pino log level |
-| `OTEL_ENABLED` | `true` to export traces to Google Cloud Trace |
+| `OTEL_ENABLED` | `true` to export OpenTelemetry traces and metrics via OTLP to Google Cloud |
 
 Example placeholders (from `.env.example`):
 
@@ -229,7 +229,7 @@ Until **`DEPLOY_ENABLED=true`**, deploy on push stays **idle**.
 - **JSON** structured logs with **request id** and **redaction** of sensitive fields.
 - **`GET /health/live`** — process up (no database).
 - **`GET /health/ready`** — database reachable; failures log a fixed message (and Prisma **code** only when present), not connection strings.
-- **OpenTelemetry** when **`OTEL_ENABLED=true`**, exporting to **Google Cloud Trace**.
+- **OpenTelemetry** when **`OTEL_ENABLED=true`**, exporting traces and metrics with **OTLP** to **Google Cloud**.
 - Cloud Run provides request count, latency, CPU, and memory in GCP Monitoring.
 - **Neon** free tier may **suspend** after ~5 minutes idle; readiness may **503** until the database wakes—retries are expected.
 
