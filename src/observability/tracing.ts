@@ -1,3 +1,4 @@
+import { hostname } from 'node:os';
 import type { GoogleAuth } from 'google-auth-library';
 import type { NodeSDK } from '@opentelemetry/sdk-node';
 
@@ -6,9 +7,14 @@ let cachedGoogleAuth: GoogleAuth | undefined;
 let cachedAuthHeaders: (() => Promise<Record<string, string>>) | undefined;
 
 const GCP_CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+const GCE_METADATA_REGION_URL =
+  'http://metadata.google.internal/computeMetadata/v1/instance/region';
+const METADATA_FETCH_TIMEOUT_MS = 1_000;
 const OTLP_TRACES_URL = 'https://telemetry.googleapis.com/v1/traces';
 const OTLP_METRICS_URL = 'https://telemetry.googleapis.com/v1/metrics';
 const METRIC_EXPORT_INTERVAL_MS = 30_000;
+const CLOUD_REGION_UNAVAILABLE_MESSAGE =
+  'OpenTelemetry: cloud region unavailable; metrics export may be rejected';
 
 export function isSafeToLogOpenTelemetryMessage(message: string): boolean {
   return !message.includes('Bearer') && !message.includes('ya29.');
@@ -20,6 +26,47 @@ export function isGcpProjectIdUnavailableError(error: unknown): boolean {
   const message =
     error instanceof Error ? error.message : error ? String(error) : '';
   return message.includes(GCP_PROJECT_ID_UNAVAILABLE_MARKER);
+}
+
+export function parseGceMetadataRegionBody(body: string): string | undefined {
+  const trimmed = body.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const segments = trimmed.split('/').filter((segment) => segment.length > 0);
+  const regionsIndex = segments.indexOf('regions');
+  if (regionsIndex === -1 || regionsIndex >= segments.length - 1) {
+    return undefined;
+  }
+  return segments[regionsIndex + 1];
+}
+
+async function fetchGceRegionFromMetadata(): Promise<string | undefined> {
+  try {
+    const response = await fetch(GCE_METADATA_REGION_URL, {
+      headers: { 'Metadata-Flavor': 'Google' },
+      signal: AbortSignal.timeout(METADATA_FETCH_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      return undefined;
+    }
+    const body = await response.text();
+    return parseGceMetadataRegionBody(body);
+  } catch {
+    return undefined;
+  }
+}
+
+async function resolveCloudRegion(): Promise<string | undefined> {
+  const fromMetadata = await fetchGceRegionFromMetadata();
+  if (fromMetadata) {
+    return fromMetadata;
+  }
+  const fromEnv = process.env.CLOUD_REGION;
+  if (typeof fromEnv === 'string' && fromEnv.length > 0) {
+    return fromEnv;
+  }
+  return undefined;
 }
 
 async function resolveGcpProjectId(
@@ -143,12 +190,25 @@ export async function initializeTracing(enabled: boolean): Promise<void> {
         ? process.env.K_SERVICE
         : 'tax-service';
 
+    const instanceId = hostname().trim() || 'tax-service';
+    const cloudRegion = await resolveCloudRegion();
+    if (!cloudRegion) {
+      console.warn(CLOUD_REGION_UNAVAILABLE_MESSAGE);
+    }
+
+    const resourceAttributes: Record<string, string> = {
+      'service.name': serviceName,
+      'gcp.project_id': projectId,
+      'service.instance.id': instanceId,
+      'cloud.provider': 'gcp',
+    };
+    if (cloudRegion) {
+      resourceAttributes['cloud.region'] = cloudRegion;
+    }
+
     const sdk = new NodeSDK({
       serviceName,
-      resource: resourceFromAttributes({
-        'service.name': serviceName,
-        'gcp.project_id': projectId,
-      }),
+      resource: resourceFromAttributes(resourceAttributes),
       traceExporter,
       metricReaders: [metricReader],
       instrumentations: [new HttpInstrumentation(), new PgInstrumentation()],
