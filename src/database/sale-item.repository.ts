@@ -32,6 +32,27 @@ export class SaleItemRepository {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${key1}, ${key2})`;
   }
 
+  async acquireInvoiceItemLocks(
+    invoiceId: string,
+    itemIds: string[],
+    tx: PrismaTx,
+  ): Promise<void> {
+    if (itemIds.length === 0) {
+      return;
+    }
+    const sortedKeys = itemIds
+      .map((itemId) => saleItemAdvisoryLockKeys(invoiceId, itemId))
+      .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const valueRows = sortedKeys.map(
+      ([key1, key2]) => Prisma.sql`(${key1}, ${key2})`,
+    );
+    await tx.$executeRaw`
+      SELECT pg_advisory_xact_lock(v.k1, v.k2)
+      FROM (VALUES ${Prisma.join(valueRows)}) AS v(k1, k2)
+      ORDER BY v.k1, v.k2
+    `;
+  }
+
   findByInvoiceAndItem(
     invoiceId: string,
     itemId: string,
@@ -69,6 +90,24 @@ export class SaleItemRepository {
         costPennies: input.costPennies,
         taxRate: input.taxRate,
       },
+    });
+  }
+
+  async createMany(
+    inputs: InsertSaleItemInput[],
+    tx?: PrismaTx,
+  ): Promise<void> {
+    if (inputs.length === 0) {
+      return;
+    }
+    await this.client(tx).saleItem.createMany({
+      data: inputs.map((input) => ({
+        invoiceId: input.invoiceId,
+        itemId: input.itemId,
+        effectiveAt: input.effectiveAt,
+        costPennies: input.costPennies,
+        taxRate: input.taxRate,
+      })),
     });
   }
 

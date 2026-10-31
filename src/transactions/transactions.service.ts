@@ -26,8 +26,6 @@ type SalesIngestPayload = {
   items: Array<{ itemId: string; cost: number; taxRate: number }>;
 };
 
-type SaleItemOutcome = 'created' | 'identical_replay';
-
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
@@ -111,30 +109,86 @@ export class TransactionsService {
 
     try {
       const tallies = await this.prisma.$transaction(async (tx) => {
-        let created = 0;
+        const itemIds = payload.items.map((item) => item.itemId);
+        await this.saleItems.acquireInvoiceItemLocks(
+          payload.invoiceId,
+          itemIds,
+          tx,
+        );
+
+        const existingRows = await this.saleItems.findByInvoiceAndItems(
+          payload.invoiceId,
+          itemIds,
+          tx,
+        );
+        const existingByItemId = new Map(
+          existingRows.map((row) => [row.itemId, row]),
+        );
+
+        const toInsert: Array<{
+          invoiceId: string;
+          itemId: string;
+          effectiveAt: Date;
+          costPennies: number;
+          taxRate: string;
+        }> = [];
         let identicalReplay = 0;
+
+        for (const item of payload.items) {
+          const taxRate = decimalTaxRate(item.taxRate);
+          const existing = existingByItemId.get(item.itemId);
+          if (existing) {
+            this.assertIdenticalOrThrow(
+              existing,
+              effectiveAt,
+              item.cost,
+              taxRate,
+            );
+            identicalReplay += 1;
+            continue;
+          }
+          toInsert.push({
+            invoiceId: payload.invoiceId,
+            itemId: item.itemId,
+            effectiveAt,
+            costPennies: item.cost,
+            taxRate: taxRate.toString(),
+          });
+        }
+
+        let created = 0;
         let recognizedPennies = 0;
         const now = new Date();
 
-        for (const item of payload.items) {
-          const outcome = await this.processSaleItem(
-            tx,
-            payload.invoiceId,
-            effectiveAt,
-            item.itemId,
-            item.cost,
-            decimalTaxRate(item.taxRate),
-          );
-          if (outcome === 'created') {
-            created += 1;
+        if (toInsert.length > 0) {
+          try {
+            await this.saleItems.createMany(toInsert, tx);
+          } catch (error) {
+            if (this.isUniqueViolation(error)) {
+              throw new SaleItemUniqueRaceError(
+                payload.invoiceId,
+                toInsert.map((row) => ({
+                  invoiceId: row.invoiceId,
+                  itemId: row.itemId,
+                  effectiveAt: row.effectiveAt,
+                  costPennies: row.costPennies,
+                  taxRate: decimalTaxRate(row.taxRate),
+                })),
+              );
+            }
+            throw error;
+          }
+          created = toInsert.length;
+          for (const item of payload.items) {
+            if (existingByItemId.has(item.itemId)) {
+              continue;
+            }
             if (effectiveAt.getTime() <= now.getTime()) {
               recognizedPennies += calculateItemTaxPennies(
                 item.cost,
                 item.taxRate,
               );
             }
-          } else {
-            identicalReplay += 1;
           }
         }
 
@@ -174,22 +228,52 @@ export class TransactionsService {
     payload: SalesIngestPayload,
     allowRetry: boolean,
   ): Promise<void> {
-    const existing = await this.saleItems.findByInvoiceAndItem(
+    const pendingItemIds = race.pendingInserts.map((pending) => pending.itemId);
+    const existingRows = await this.saleItems.findByInvoiceAndItems(
       race.invoiceId,
-      race.itemId,
+      pendingItemIds,
     );
-    if (!existing) {
+    const existingByItemId = new Map(
+      existingRows.map((row) => [row.itemId, row]),
+    );
+
+    for (const pending of race.pendingInserts) {
+      const existing = existingByItemId.get(pending.itemId);
+      if (
+        existing &&
+        !this.isIdenticalSaleItem(
+          existing,
+          pending.effectiveAt,
+          pending.costPennies,
+          pending.taxRate,
+        )
+      ) {
+        this.ledgerMetrics.recordSaleLineConflict();
+        throw new ConflictException(SALE_CONFLICT_MESSAGE);
+      }
+    }
+
+    const allAbsent = race.pendingInserts.every(
+      (pending) => !existingByItemId.has(pending.itemId),
+    );
+    if (allAbsent) {
       throw race;
     }
 
-    if (
-      this.isIdenticalSaleItem(
-        existing,
-        race.effectiveAt,
-        race.costPennies,
-        race.taxRate,
-      )
-    ) {
+    const allPresentIdentical = race.pendingInserts.every((pending) => {
+      const existing = existingByItemId.get(pending.itemId);
+      return (
+        existing !== undefined &&
+        this.isIdenticalSaleItem(
+          existing,
+          pending.effectiveAt,
+          pending.costPennies,
+          pending.taxRate,
+        )
+      );
+    });
+
+    if (allPresentIdentical) {
       if (!allowRetry) {
         return;
       }
@@ -197,57 +281,15 @@ export class TransactionsService {
       return;
     }
 
-    this.ledgerMetrics.recordSaleLineConflict();
-    throw new ConflictException(SALE_CONFLICT_MESSAGE);
-  }
-
-  private async processSaleItem(
-    tx: Prisma.TransactionClient,
-    invoiceId: string,
-    effectiveAt: Date,
-    itemId: string,
-    costPennies: number,
-    taxRate: Decimal,
-  ): Promise<SaleItemOutcome> {
-    await this.saleItems.acquireInvoiceItemLock(invoiceId, itemId, tx);
-
-    const taxRateString = taxRate.toString();
-    const existing = await this.saleItems.findByInvoiceAndItem(
-      invoiceId,
-      itemId,
-      tx,
+    const anyAbsent = race.pendingInserts.some(
+      (pending) => !existingByItemId.has(pending.itemId),
     );
-
-    if (existing) {
-      this.assertIdenticalOrThrow(existing, effectiveAt, costPennies, taxRate);
-      return 'identical_replay';
+    if (anyAbsent && allowRetry) {
+      await this.ingestSales(payload, false);
+      return;
     }
 
-    try {
-      await this.saleItems.insert(
-        {
-          invoiceId,
-          itemId,
-          effectiveAt,
-          costPennies,
-          taxRate: taxRateString,
-        },
-        tx,
-      );
-    } catch (error) {
-      if (this.isUniqueViolation(error)) {
-        throw new SaleItemUniqueRaceError(
-          invoiceId,
-          itemId,
-          effectiveAt,
-          costPennies,
-          taxRate,
-        );
-      }
-      throw error;
-    }
-
-    return 'created';
+    throw race;
   }
 
   private assertIdenticalOrThrow(
