@@ -4,19 +4,29 @@ import {
   type Amendment,
   type SaleLine,
 } from '../domain/amendment-resolver';
-import { calculateTaxPositionPounds } from '../domain/tax-calculator';
+import { calculateTaxPositionPennies } from '../domain/tax-calculator';
 import {
   formatInstant,
   isValidInstantTimestamp,
   parseInstantToUtcDate,
 } from '../domain/dates';
+import { penniesToPounds } from '../domain/money';
 import { SaleAmendmentRepository } from '../database/sale-amendment.repository';
 import { SaleItemRepository } from '../database/sale-item.repository';
 import { TaxPaymentRepository } from '../database/tax-payment.repository';
+import {
+  classifyTaxPositionQueryHorizon,
+  LedgerMetrics,
+} from '../observability/ledger-metrics';
 
 export type TaxPositionResponse = {
   date: string;
   taxPosition: number;
+};
+
+export type TaxPositionAtResult = {
+  pennies: number;
+  effectiveLineCount: number;
 };
 
 @Injectable()
@@ -25,6 +35,7 @@ export class TaxPositionService {
     private readonly saleItems: SaleItemRepository,
     private readonly saleAmendments: SaleAmendmentRepository,
     private readonly taxPayments: TaxPaymentRepository,
+    private readonly ledgerMetrics: LedgerMetrics,
   ) {}
 
   async getTaxPosition(
@@ -40,17 +51,46 @@ export class TaxPositionService {
     }
 
     const at = parseInstantToUtcDate(dateParam);
+    const now = new Date();
+    const { pennies, effectiveLineCount } = await this.positionPenniesAt(at);
 
+    this.ledgerMetrics.recordTaxPositionQuery(
+      classifyTaxPositionQueryHorizon(at, now),
+    );
+    this.ledgerMetrics.recordTaxPositionResult(pennies);
+    this.ledgerMetrics.recordTaxPositionLines(effectiveLineCount);
+
+    return {
+      date: formatInstant(at),
+      taxPosition: penniesToPounds(pennies),
+    };
+  }
+
+  async positionPenniesAt(at: Date): Promise<TaxPositionAtResult> {
+    const effectiveLines = await this.loadResolvedLinesForPounds(at);
+    const paymentAmountsPennies = await this.loadPaymentAmountsPennies(at);
+    const pennies = calculateTaxPositionPennies(
+      effectiveLines,
+      paymentAmountsPennies,
+    );
+    return {
+      pennies,
+      effectiveLineCount: effectiveLines.length,
+    };
+  }
+
+  private async loadResolvedLinesForPounds(at: Date) {
     const saleRows = await this.saleItems.findEffectiveAtOrBefore(at);
     const saleKeys = saleRows.map((row) => ({
       invoiceId: row.invoiceId,
       itemId: row.itemId,
     }));
 
-    const [amendmentRows, paymentRows] = await Promise.all([
-      this.saleAmendments.findForInvoiceItemsEffectiveAtOrBefore(saleKeys, at),
-      this.taxPayments.findEffectiveAtOrBefore(at),
-    ]);
+    const amendmentRows =
+      await this.saleAmendments.findForInvoiceItemsEffectiveAtOrBefore(
+        saleKeys,
+        at,
+      );
 
     const sales: SaleLine[] = saleRows.map((row) => ({
       invoiceId: row.invoiceId,
@@ -70,16 +110,11 @@ export class TaxPositionService {
       ingestedAt: row.ingestedAt,
     }));
 
-    const paymentAmountsPennies = paymentRows.map((row) => row.amountPennies);
-    const effectiveLines = resolveEffectiveLines(sales, amendments, at);
-    const taxPosition = calculateTaxPositionPounds(
-      effectiveLines,
-      paymentAmountsPennies,
-    );
+    return resolveEffectiveLines(sales, amendments, at);
+  }
 
-    return {
-      date: formatInstant(at),
-      taxPosition,
-    };
+  private async loadPaymentAmountsPennies(at: Date): Promise<number[]> {
+    const paymentRows = await this.taxPayments.findEffectiveAtOrBefore(at);
+    return paymentRows.map((row) => row.amountPennies);
   }
 }

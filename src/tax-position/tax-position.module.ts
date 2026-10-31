@@ -13,5 +13,6 @@ import { TaxPositionService } from './tax-position.service';
     SaleAmendmentRepository,
     TaxPaymentRepository,
   ],
+  exports: [TaxPositionService],
 })
 export class TaxPositionModule {}

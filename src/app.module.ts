@@ -3,6 +3,7 @@ import { AppConfigModule } from './config/config.module';
 import { AppLoggerModule } from './common/logging/logger.module';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
+import { LedgerMetricsModule } from './observability/ledger-metrics.module';
 import { TaxPositionModule } from './tax-position/tax-position.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import type { Env } from './config/env.schema';
@@ -18,6 +19,7 @@ export class AppModule {
         AppLoggerModule,
         DatabaseModule,
         HealthModule,
+        LedgerMetricsModule,
         TransactionsModule,
         TaxPositionModule,
       ],
