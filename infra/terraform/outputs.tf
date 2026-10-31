@@ -22,3 +22,8 @@ output "artifact_registry_repository" {
   description = "Artifact Registry Docker repository resource ID"
   value       = google_artifact_registry_repository.docker.id
 }
+
+output "monitoring_dashboard" {
+  description = "Cloud Monitoring dashboard for the tax service"
+  value       = google_monitoring_dashboard.tax_service.id
+}
